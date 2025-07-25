@@ -1,15 +1,11 @@
 
-import React, { useState } from 'react';
+import React from 'react';
 import ChatSidebar from '@/components/ChatSidebar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronDown, Leaf } from 'lucide-react';
 
 const InsightsPage = () => {
-  const [activeTab, setActiveTab] = useState('Overall');
-
-  const tabs = ['Overall', 'Financial', 'Health', 'Emotional'];
-
   const insights = [
     {
       id: 1,
@@ -37,14 +33,6 @@ const InsightsPage = () => {
     },
     {
       id: 4,
-      type: 'sleep-status',
-      title: 'Sleep is down.',
-      subtitle: 'Rest hasn\'t been easy.',
-      bgColor: 'bg-gray-800',
-      span: 'col-span-1 row-span-1'
-    },
-    {
-      id: 5,
       type: 'emotional-weight',
       title: 'Emotional weight, rest →',
       subtitle: "It's a lot.",
@@ -76,23 +64,6 @@ const InsightsPage = () => {
             </div>
           </div>
           
-          {/* Filter Tabs */}
-          <div className="flex gap-3">
-            {tabs.map((tab, index) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-6 py-3 rounded-full text-sm transition-all duration-300 border transform hover:scale-105 ${
-                  activeTab === tab
-                    ? 'bg-white text-black font-medium shadow-lg scale-105'
-                    : 'bg-transparent text-white/70 hover:text-white border-gray-600 hover:border-gray-500 hover:bg-white/5'
-                }`}
-                style={{ animationDelay: `${index * 0.1}s` }}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Insights Grid */}
