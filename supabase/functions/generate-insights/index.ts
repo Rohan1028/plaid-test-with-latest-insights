@@ -729,17 +729,41 @@ Do not include any other text.
     });
     
     const aiData = await aiRes.json();
-    let insights = {};
+    let rawInsights = {};
     try {
-      insights = JSON.parse(aiData.choices?.[0]?.message?.content || '{}');
+      rawInsights = JSON.parse(aiData.choices?.[0]?.message?.content || '{}');
     } catch {
-      insights = {
+      rawInsights = {
         wins_amplifier: { headline: "You're managing your money", detail: "Keep going with your financial journey." },
         shame_language_detector: { headline: "Be kind to yourself", detail: "Money management is a learning process." },
         reality_vs_perception_gap: { headline: "You're doing better than you think", detail: "Your actions show financial awareness." },
         family_pattern_acknowledgement: { headline: "You're creating your own path", detail: "Your choices reflect your values." }
       };
     }
+
+    // Convert to frontend-expected format (array with title/subtitle)
+    const insights = [
+      {
+        type: 'wins-amplifier',
+        title: (rawInsights as any).wins_amplifier?.headline || "You're managing your money",
+        subtitle: (rawInsights as any).wins_amplifier?.detail || "Keep going with your financial journey."
+      },
+      {
+        type: 'shame-detector', 
+        title: (rawInsights as any).shame_language_detector?.headline || "Be kind to yourself",
+        subtitle: (rawInsights as any).shame_language_detector?.detail || "Money management is a learning process."
+      },
+      {
+        type: 'reality-gap',
+        title: (rawInsights as any).reality_vs_perception_gap?.headline || "You're doing better than you think", 
+        subtitle: (rawInsights as any).reality_vs_perception_gap?.detail || "Your actions show financial awareness."
+      },
+      {
+        type: 'family-pattern',
+        title: (rawInsights as any).family_pattern_acknowledgement?.headline || "You're creating your own path",
+        subtitle: (rawInsights as any).family_pattern_acknowledgement?.detail || "Your choices reflect your values."
+      }
+    ];
 
     return new Response(JSON.stringify({ insights }), {
       status: 200,
