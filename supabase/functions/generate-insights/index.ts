@@ -579,32 +579,63 @@ Tracked when users reflect on money messages or patterns from their upbringing.
 `;
 
 serve(async (req) => {
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID().substring(0, 8);
+  
+  console.log(`🚀 [${requestId}] Generate Insights - Request started at ${new Date().toISOString()}`);
+  console.log(`📝 [${requestId}] Request method: ${req.method}`);
+  console.log(`🌐 [${requestId}] Request URL: ${req.url}`);
+  
   if (req.method === 'OPTIONS') {
+    console.log(`✅ [${requestId}] CORS preflight handled`);
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    console.log(`🔐 [${requestId}] Starting authentication...`);
+    
     // 1. Auth
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      console.error(`❌ [${requestId}] Missing Authorization header`);
+      return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    console.log(`🔑 [${requestId}] Authorization header present: ${authHeader.substring(0, 20)}...`);
+    
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
       {
         global: {
-          headers: { Authorization: req.headers.get('Authorization')! }
+          headers: { Authorization: authHeader }
         }
       }
     );
-    const { data: { user } } = await supabaseClient.auth.getUser();
-    if (!user) {
+    
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+    if (userError || !user) {
+      console.error(`❌ [${requestId}] Authentication failed:`, userError?.message || 'No user found');
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
+    
+    console.log(`✅ [${requestId}] User authenticated: ${user.id} (${user.email})`);
 
     // 2. Get access_token from request body (like plaid-sync-transactions)
-    const { access_token, months_back = 12 } = await req.json();
+    console.log(`📥 [${requestId}] Parsing request body...`);
+    const requestBody = await req.json();
+    const { access_token, months_back = 12 } = requestBody;
+    
+    console.log(`📊 [${requestId}] Request params - months_back: ${months_back}, access_token: ${access_token ? 'present (' + access_token.substring(0, 15) + '...)' : 'missing'}`);
+    
     if (!access_token) {
+      console.error(`❌ [${requestId}] Missing access_token in request body`);
       return new Response(JSON.stringify({ error: 'Missing access_token' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -612,20 +643,37 @@ serve(async (req) => {
     }
 
     // 3. Intake responses
-    const { data: intakeResponses } = await supabaseClient
+    console.log(`💬 [${requestId}] Fetching intake responses for user ${user.id}...`);
+    const { data: intakeResponses, error: intakeError } = await supabaseClient
       .from('intake_responses')
       .select('question_text, answer, created_at')
       .eq('user_id', user.id);
+    
+    if (intakeError) {
+      console.error(`❌ [${requestId}] Error fetching intake responses:`, intakeError);
+    } else {
+      console.log(`✅ [${requestId}] Intake responses fetched: ${intakeResponses?.length || 0} responses`);
+    }
 
     // 4. Chat history
-    const { data: chatHistory } = await supabaseClient
+    console.log(`💭 [${requestId}] Fetching chat history for user ${user.id}...`);
+    const { data: chatHistory, error: chatError } = await supabaseClient
       .from('chat_messages')
       .select('content, role, created_at')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(50);
+    
+    if (chatError) {
+      console.error(`❌ [${requestId}] Error fetching chat history:`, chatError);
+    } else {
+      console.log(`✅ [${requestId}] Chat history fetched: ${chatHistory?.length || 0} messages`);
+    }
 
     // 5. Fetch Plaid transactions (same logic as plaid-sync-transactions)
+    console.log(`🏦 [${requestId}] Starting Plaid transaction sync...`);
+    console.log(`🔧 [${requestId}] Plaid environment: ${PLAID_ENV}, Base URL: ${PLAID_BASE_URL}`);
+    
     let allTransactions: any[] = [];
     let cursor = '';
     let hasMore = true;
@@ -635,6 +683,8 @@ serve(async (req) => {
 
     while (hasMore && requestCount < 10) {
       requestCount++;
+      console.log(`📡 [${requestId}] Plaid sync request #${requestCount}, cursor: ${cursor || 'initial'}`);
+      
       const syncRes = await fetch(`${PLAID_BASE_URL}/transactions/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -648,32 +698,49 @@ serve(async (req) => {
       });
       
       const syncData = await syncRes.json();
+      console.log(`📊 [${requestId}] Plaid response status: ${syncRes.status}, ok: ${syncRes.ok}`);
+      
       if (!syncRes.ok) {
+        console.error(`❌ [${requestId}] Plaid sync failed:`, syncData);
         if (syncData.error_code === 'PRODUCT_NOT_READY' && retryCount < maxRetries) {
           retryCount++;
           const waitTime = Math.min(2000 * retryCount, 10000);
+          console.log(`⏳ [${requestId}] Product not ready, retrying in ${waitTime}ms (attempt ${retryCount}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, waitTime));
           requestCount--;
           continue;
         }
+        console.error(`❌ [${requestId}] Plaid sync failed permanently:`, syncData.error_code);
         break;
       }
 
+      console.log(`✅ [${requestId}] Plaid sync successful - added: ${syncData.added?.length || 0}, modified: ${syncData.modified?.length || 0}, removed: ${syncData.removed?.length || 0}`);
+      
       if (syncData.added && syncData.added.length > 0) {
         allTransactions = allTransactions.concat(syncData.added);
+        console.log(`📈 [${requestId}] Total transactions so far: ${allTransactions.length}`);
       }
       cursor = syncData.next_cursor;
       hasMore = syncData.has_more;
+      
+      console.log(`🔄 [${requestId}] Next cursor: ${cursor}, has more: ${hasMore}`);
+      
       if (hasMore) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
+    
+    console.log(`🏁 [${requestId}] Plaid sync completed - Total requests: ${requestCount}, Total transactions: ${allTransactions.length}`);
 
     // Filter by date range after sync
+    console.log(`📅 [${requestId}] Filtering transactions by date range...`);
     const now = new Date();
     const startDate = new Date(now.getFullYear(), now.getMonth() - months_back, now.getDate()).toISOString().slice(0, 10);
     const endDate = now.toISOString().slice(0, 10);
+    console.log(`📊 [${requestId}] Date range: ${startDate} to ${endDate} (${months_back} months back)`);
+    
     const plaidData = allTransactions.filter(txn => txn.date >= startDate && txn.date <= endDate);
+    console.log(`✅ [${requestId}] Filtered transactions: ${plaidData.length} out of ${allTransactions.length} total transactions`);
 
     // 6. Build prompt
     const prompt = `
@@ -712,6 +779,15 @@ Do not include any other text.
 `;
 
     // 7. Call Azure OpenAI (using same endpoint pattern as plaid-sync-transactions)
+    console.log(`🤖 [${requestId}] Building prompt for AI...`);
+    console.log(`📝 [${requestId}] Data summary - Intake: ${intakeResponses?.length || 0} responses, Chat: ${chatHistory?.length || 0} messages, Transactions: ${plaidData.length}`);
+    
+    const promptLength = prompt.length;
+    console.log(`📏 [${requestId}] Prompt length: ${promptLength} characters`);
+    
+    console.log(`🚀 [${requestId}] Calling Azure OpenAI...`);
+    console.log(`🔗 [${requestId}] Azure endpoint: ${AZURE_OPENAI_ENDPOINT.substring(0, 50)}...`);
+    
     const aiRes = await fetch(AZURE_OPENAI_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -728,11 +804,28 @@ Do not include any other text.
       })
     });
     
+    console.log(`📊 [${requestId}] Azure OpenAI response status: ${aiRes.status}, ok: ${aiRes.ok}`);
+    
     const aiData = await aiRes.json();
+    console.log(`🧠 [${requestId}] AI response received, parsing insights...`);
+    
+    if (!aiRes.ok) {
+      console.error(`❌ [${requestId}] Azure OpenAI error:`, aiData);
+    }
+    
     let rawInsights = {};
+    let usedFallback = false;
+    
     try {
-      rawInsights = JSON.parse(aiData.choices?.[0]?.message?.content || '{}');
-    } catch {
+      const aiContent = aiData.choices?.[0]?.message?.content;
+      console.log(`📜 [${requestId}] AI content length: ${aiContent?.length || 0} characters`);
+      console.log(`🔍 [${requestId}] AI content preview: ${aiContent?.substring(0, 200)}...`);
+      
+      rawInsights = JSON.parse(aiContent || '{}');
+      console.log(`✅ [${requestId}] Successfully parsed AI insights`);
+    } catch (parseError) {
+      console.error(`❌ [${requestId}] Failed to parse AI response, using fallback insights:`, parseError);
+      usedFallback = true;
       rawInsights = {
         wins_amplifier: { headline: "You're managing your money", detail: "Keep going with your financial journey." },
         shame_language_detector: { headline: "Be kind to yourself", detail: "Money management is a learning process." },
@@ -740,8 +833,11 @@ Do not include any other text.
         family_pattern_acknowledgement: { headline: "You're creating your own path", detail: "Your choices reflect your values." }
       };
     }
+    
+    console.log(`🎯 [${requestId}] Using ${usedFallback ? 'fallback' : 'AI-generated'} insights`);
 
     // Convert to frontend-expected format (array with title/subtitle)
+    console.log(`🔄 [${requestId}] Converting insights to frontend format...`);
     const insights = [
       {
         type: 'wins-amplifier',
@@ -765,12 +861,31 @@ Do not include any other text.
       }
     ];
 
+    console.log(`✅ [${requestId}] Insights formatted successfully:`);
+    insights.forEach((insight, index) => {
+      console.log(`   ${index + 1}. [${insight.type}] ${insight.title.substring(0, 50)}...`);
+    });
+
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+    console.log(`🏁 [${requestId}] Request completed successfully in ${duration}ms`);
+
     return new Response(JSON.stringify({ insights }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: 'Internal error', details: String(err) }), {
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+    console.error(`💥 [${requestId}] Request failed after ${duration}ms:`, err);
+    console.error(`📊 [${requestId}] Error stack:`, (err as Error).stack);
+    
+    return new Response(JSON.stringify({ 
+      error: 'Internal error', 
+      details: String(err),
+      request_id: requestId,
+      duration_ms: duration
+    }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
