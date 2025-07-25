@@ -1,0 +1,145 @@
+// supabase/functions/generate-insights/index.ts
+
+import { serve } from "std/server";
+import { OpenAIClient, AzureKeyCredential } from "@azure/openai";
+
+// Environment variables (set in Supabase dashboard)
+const AZURE_OPENAI_ENDPOINT = Deno.env.get("AZURE_OPENAI_ENDPOINT")!;
+const AZURE_OPENAI_KEY = Deno.env.get("AZURE_OPENAI_KEY")!;
+const AZURE_OPENAI_DEPLOYMENT = Deno.env.get("AZURE_OPENAI_DEPLOYMENT")!; // e.g. "gpt-4-1"
+const INSIGHT_DEFINITIONS = Deno.env.get("INSIGHT_DEFINITIONS") || ""; // Optionally store definitions here
+
+// Helper: Default insight definitions (fallback)
+const defaultInsightDefinitions = `
+Wins-amplifier:
+[Insert the Wins-amplifier section from Financial Insights - Incluya.txt here]
+
+Shame Language Detector:
+[Insert the Shame Language Detector section here]
+
+Reality vs. Perception Gap:
+[Insert the Reality vs. Perception Gap section here]
+
+Family Pattern Acknowledgement:
+[Insert the Family Pattern Acknowledgement section here]
+`;
+
+// Helper: Build the LLM prompt
+function buildPrompt({
+  intakeResponses,
+  chatHistory,
+  plaidData,
+  insightDefinitions,
+}: {
+  intakeResponses: any[];
+  chatHistory: any[];
+  plaidData: any;
+  insightDefinitions: string;
+}) {
+  return `
+You are a financial wellness AI. Your job is to generate four personalized insight cards for a user, each corresponding to one of these insights:
+1. Wins-amplifier
+2. Shame Language Detector
+3. Reality vs. Perception Gap
+4. Family Pattern Acknowledgement
+
+Each card should:
+- Be concise (1-2 sentences headline, 1-2 sentences supporting detail)
+- Be empathetic, trauma-informed, and actionable
+- Reference the user's real intake answers, chat history, and Plaid data
+
+--- INSIGHT DEFINITIONS ---
+${insightDefinitions}
+
+--- USER INTAKE RESPONSES ---
+${JSON.stringify(intakeResponses, null, 2)}
+
+--- USER CHAT HISTORY (most recent first) ---
+${JSON.stringify(chatHistory, null, 2)}
+
+--- USER PLAID DATA (transactions, summaries, etc.) ---
+${JSON.stringify(plaidData, null, 2)}
+
+--- OUTPUT FORMAT ---
+Return a JSON object with this shape:
+{
+  "wins_amplifier": { "headline": "...", "detail": "..." },
+  "shame_language_detector": { "headline": "...", "detail": "..." },
+  "reality_vs_perception_gap": { "headline": "...", "detail": "..." },
+  "family_pattern_acknowledgement": { "headline": "...", "detail": "..." }
+}
+Do not include any other text.
+`;
+}
+
+serve(async (req) => {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  try {
+    const { intakeResponses, chatHistory, plaidData, insightDefinitions } = await req.json();
+
+    // Use provided definitions, env, or fallback
+    const definitions =
+      insightDefinitions ||
+      INSIGHT_DEFINITIONS ||
+      defaultInsightDefinitions;
+
+    const prompt = buildPrompt({
+      intakeResponses,
+      chatHistory,
+      plaidData,
+      insightDefinitions: definitions,
+    });
+
+    // Set up Azure OpenAI client
+    const client = new OpenAIClient(
+      AZURE_OPENAI_ENDPOINT,
+      new AzureKeyCredential(AZURE_OPENAI_KEY)
+    );
+
+    // Call GPT-4.1
+    const completion = await client.getChatCompletions(AZURE_OPENAI_DEPLOYMENT, [
+      {
+        role: "system",
+        content: "You are a helpful, trauma-informed financial wellness AI.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ], {
+      maxTokens: 800,
+      temperature: 0.7,
+    });
+
+    const responseText = completion.choices[0]?.message?.content?.trim() || "";
+
+    // Parse the JSON output from the LLM
+    let insights;
+    try {
+      insights = JSON.parse(responseText);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({
+          error: "Failed to parse LLM response as JSON.",
+          raw: responseText,
+        }),
+        { status: 500 }
+      );
+    }
+
+    return new Response(JSON.stringify({ insights }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: "Internal error", details: String(err) }),
+      { status: 500 }
+    );
+  }
+});
+
+
+
