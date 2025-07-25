@@ -1,44 +1,184 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import ChatSidebar from '@/components/ChatSidebar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { ChevronDown, Leaf } from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
+import { supabase } from '@/integrations/supabase/client';
+
+const SUPABASE_PROJECT_REF = 'lnjxsfxymutsksmzduss';
+const SUPABASE_FUNCTIONS_BASE = `https://${SUPABASE_PROJECT_REF}.functions.supabase.co`;
+const GENERATE_INSIGHTS_URL = `${SUPABASE_FUNCTIONS_BASE}/generate-insights`;
+
+interface Insight {
+  id: number;
+  type: string;
+  title: string;
+  subtitle?: string;
+  bgColor: string;
+  span: string;
+}
 
 const InsightsPage = () => {
-  const insights = [
+  const { user } = useAuth();
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Get Plaid access token from localStorage (same pattern as PlaidTransactionsPage)
+  const getPlaidAccessToken = () => {
+    try {
+      const tokenData = localStorage.getItem('plaidAccessToken');
+      if (tokenData) {
+        const parsed = JSON.parse(tokenData);
+        return parsed.access_token || parsed;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error parsing Plaid access token:', error);
+      return null;
+    }
+  };
+
+  const fetchInsights = async () => {
+    if (!user) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const accessToken = getPlaidAccessToken();
+      if (!accessToken) {
+        setError('No Plaid connection found. Please connect your bank account first.');
+        setLoading(false);
+        return;
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setError('Authentication required');
+        setLoading(false);
+        return;
+      }
+
+      const response = await fetch(GENERATE_INSIGHTS_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          access_token: accessToken,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        throw new Error(`Failed to fetch insights: ${errorData}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.insights && Array.isArray(data.insights)) {
+        // Map the LLM insights to our UI format
+        const formattedInsights: Insight[] = data.insights.map((insight: any, index: number) => ({
+          id: index + 1,
+          type: insight.type || getInsightType(index),
+          title: insight.title || insight.display || 'Insight',
+          subtitle: insight.subtitle || insight.detail || '',
+          bgColor: 'bg-gray-800',
+          span: 'col-span-1 row-span-1'
+        }));
+        
+        setInsights(formattedInsights);
+      } else {
+        throw new Error('Invalid insights format received');
+      }
+    } catch (error) {
+      console.error('Error fetching insights:', error);
+      setError(error instanceof Error ? error.message : 'Failed to fetch insights');
+      // Fall back to placeholder insights on error
+      setInsights(getPlaceholderInsights());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Helper function to assign insight types based on index
+  const getInsightType = (index: number) => {
+    const types = ['wins-amplifier', 'shame-detector', 'reality-gap', 'family-pattern'];
+    return types[index] || 'general-insight';
+  };
+
+  // Fallback placeholder insights
+  const getPlaceholderInsights = (): Insight[] => [
     {
       id: 1,
-      type: 'spending-image',
-      title: "You've been spending (~$330 more on retail) since your sleep dropped and you mentioned a breakup.",
+      type: 'wins-amplifier',
+      title: "Connect your bank account to see personalized insights",
+      subtitle: "We'll analyze your financial patterns to provide helpful guidance",
       bgColor: 'bg-gray-800',
       span: 'col-span-1 row-span-1'
     },
     {
       id: 2,
-      type: 'feeling-check',
-      title: 'Feeling off lately?',
-      subtitle: "You haven't said much, but your recent chat hints at a breakup.",
+      type: 'shame-detector',
+      title: 'Your financial journey is unique',
+      subtitle: "Everyone's path looks different - there's no perfect timeline",
       bgColor: 'bg-gray-800',
       span: 'col-span-1 row-span-1'
     },
     {
       id: 3,
-      type: 'spending-notice',
-      title: "Spending's up by ~$300 especially on comfort retail buys.",
-      subtitle: "That's okay.",
+      type: 'reality-gap',
+      title: 'Small steps create lasting change',
+      subtitle: "Progress isn't always visible day-to-day, but it adds up",
       bgColor: 'bg-gray-800',
       span: 'col-span-1 row-span-1'
     },
     {
       id: 4,
-      type: 'emotional-weight',
-      title: 'Emotional weight, rest →',
-      subtitle: "It's a lot.",
+      type: 'family-pattern',
+      title: 'You have more control than you think',
+      subtitle: "Breaking patterns takes time, but every choice matters",
       bgColor: 'bg-gray-800',
       span: 'col-span-1 row-span-1'
     }
   ];
+
+  useEffect(() => {
+    if (user) {
+      fetchInsights();
+    } else {
+      setInsights(getPlaceholderInsights());
+      setLoading(false);
+    }
+  }, [user]);
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="flex h-screen bg-black text-white overflow-hidden">
+        <div className="transform transition-all duration-700 ease-out">
+          <ChatSidebar />
+        </div>
+        
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-8 pt-8 pb-6">
+            <h1 className="text-4xl font-light text-white tracking-wide">Insights.</h1>
+          </div>
+          
+          <div className="flex-1 px-8 pb-8 flex items-center justify-center">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
+              <p className="text-white/70">Generating your personalized insights...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-black text-white overflow-hidden">
@@ -56,12 +196,19 @@ const InsightsPage = () => {
               <Button 
                 variant="outline" 
                 className="bg-transparent border-gray-600 text-white hover:bg-gray-800 hover:border-gray-500 text-sm transition-all duration-300 hover:scale-105"
+                onClick={fetchInsights}
+                disabled={loading}
               >
-                Today <ChevronDown className="ml-2 h-4 w-4 transition-transform duration-200" />
+                {loading ? 'Loading...' : 'Refresh'} <ChevronDown className="ml-2 h-4 w-4 transition-transform duration-200" />
               </Button>
             </div>
           </div>
           
+          {error && (
+            <div className="mb-4 p-4 bg-red-900/20 border border-red-700 rounded-lg">
+              <p className="text-red-300 text-sm">{error}</p>
+            </div>
+          )}
         </div>
 
         {/* Insights Grid */}
